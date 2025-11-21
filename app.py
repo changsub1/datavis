@@ -1281,6 +1281,10 @@ def update_overview(year, brands, year_range):
             markers=True,
             color_discrete_map=color_map,
         )
+        # 호버 텍스트 포맷 설정 (만원 단위, 쉼표 포함)
+        sales_fig.update_traces(
+            hovertemplate="<b>%{fullData.name}</b><br>연도: %{x}<br>평균매출액: %{y:,.0f}만원<extra></extra>"
+        )
         last_points = []
         for brand in time_df["브랜드"].unique():
             series = time_df[time_df["브랜드"] == brand].sort_values("연도")
@@ -1662,6 +1666,7 @@ def update_detail(brand, year_range, profit_rate):
             name="창업비용 (만원)",
             mode="lines+markers",
             line=dict(color="#2980b9", width=4),
+            hovertemplate="연도: %{x}<br>창업비용: %{y:,.0f}만원<extra></extra>",
         )
     )
     invest_fig.add_trace(
@@ -1671,6 +1676,7 @@ def update_detail(brand, year_range, profit_rate):
             name="연매출 (만원)",
             mode="lines+markers",
             line=dict(color="#c0392b", width=4),
+            hovertemplate="연도: %{x}<br>연매출: %{y:,.0f}만원<extra></extra>",
         )
     )
     invest_fig.update_layout(
