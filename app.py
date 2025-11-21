@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from functools import lru_cache
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, Iterable, List, Tuple
 
 import dash
 import dash_bootstrap_components as dbc
@@ -88,17 +88,17 @@ STORE_BUCKETS = {
     "store_custom": {"label": "직접 입력", "custom": True},
 }
 SALES_BUCKETS = {
-    "sales_400_plus": {"label": "평균 매출액 400백만원 이상", "min": 400, "max": None},
-    "sales_300_400": {"label": "300~400백만원", "min": 300, "max": 400},
-    "sales_200_300": {"label": "200~300백만원", "min": 200, "max": 300},
-    "sales_under_200": {"label": "200백만원 이하", "min": 0, "max": 200},
+    "sales_400_plus": {"label": "평균 매출액 40,000만원 이상", "min": 40000, "max": None},
+    "sales_300_400": {"label": "30,000~40,000만원", "min": 30000, "max": 40000},
+    "sales_200_300": {"label": "20,000~30,000만원", "min": 20000, "max": 30000},
+    "sales_under_200": {"label": "20,000만원 이하", "min": 0, "max": 20000},
     "sales_custom": {"label": "직접 입력", "custom": True},
 }
 COST_BUCKETS = {
-    "cost_30000_plus": {"label": "창업비용 3만만원 이상", "min": 30000, "max": None},
-    "cost_20000_30000": {"label": "2만~3만만원", "min": 20000, "max": 30000},
-    "cost_10000_20000": {"label": "1만~2만만원", "min": 10000, "max": 20000},
-    "cost_under_10000": {"label": "1만만원 이하", "min": 0, "max": 10000},
+    "cost_30000_plus": {"label": "창업비용 3억원 이상", "min": 30000, "max": None},
+    "cost_20000_30000": {"label": "2억~3억원", "min": 20000, "max": 30000},
+    "cost_10000_20000": {"label": "1억~2억원", "min": 10000, "max": 20000},
+    "cost_under_10000": {"label": "1억원 이하", "min": 0, "max": 10000},
     "cost_custom": {"label": "직접 입력", "custom": True},
 }
 
@@ -118,26 +118,88 @@ def _clean_whitespace(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def _normalize_parenthetical_content(text: str) -> str:
+    """괄호 내부의 띄워쓰기 제거 및 정규화"""
+    def replace_paren(match):
+        content = match.group(1)
+        normalized = re.sub(r"\s+", "", content)
+        return f"({normalized})"
+    return re.sub(r"\(([^)]+)\)", replace_paren, text)
+
+
 def _reorder_parenthetical(text: str) -> str:
     txt = _clean_whitespace(text)
+    txt = _normalize_parenthetical_content(txt)
     if "(" in txt and txt.endswith(")"):
         head, tail = txt.split("(", 1)
         tail = tail[:-1]
-        parts = [_clean_whitespace(head), _clean_whitespace(tail)]
+        head_clean = _clean_whitespace(head)
+        tail_clean = _clean_whitespace(tail)
+        parts = [head_clean, tail_clean]
         if all(parts):
             ordered = sorted(parts, key=lambda x: x.lower())
             return f"{ordered[0]}({ordered[1]})"
+        elif head_clean:
+            return head_clean
     return txt
 
 
+def _extract_korean_tokens(text: str) -> list[str]:
+    """한글 토큰만 추출"""
+    korean_pattern = re.compile(r"[가-힣]+")
+    return korean_pattern.findall(text)
+
+
+def _extract_english_tokens(text: str) -> list[str]:
+    """영어 토큰만 추출"""
+    english_pattern = re.compile(r"[A-Za-z]+")
+    return english_pattern.findall(text.lower())
+
+
 def _canonical_tokens(text: str, stopwords: set[str]) -> str:
+    # 띄워쓰기 제거 후 토큰 추출
+    text_no_space = re.sub(r"\s+", "", text.lower())
     tokens = [
-        token for token in TOKEN_PATTERN.findall(text.lower())
+        token for token in TOKEN_PATTERN.findall(text_no_space)
         if token not in stopwords
     ]
     if not tokens:
         return text.lower()
-    return "|".join(sorted(tokens))
+    
+    # 영어 토큰과 한글 토큰 분리
+    korean_tokens = [t for t in tokens if re.search(r"[가-힣]", t)]
+    english_tokens = [t for t in tokens if re.search(r"[a-z]", t)]
+    
+    # 각각 정렬하여 반환 (영어|한글 형식)
+    parts = []
+    if english_tokens:
+        parts.append("|".join(sorted(english_tokens)))
+    if korean_tokens:
+        parts.append("|".join(sorted(korean_tokens)))
+    
+    return "||".join(parts) if parts else "|".join(sorted(tokens))
+
+
+def _tokens_match(tokens1: str, tokens2: str) -> bool:
+    """두 토큰 문자열이 매칭되는지 확인 (영어 또는 한글 중 하나라도 일치하면 True)"""
+    if not tokens1 or not tokens2:
+        return False
+    
+    # "||"로 분리된 경우 (영어||한글 형식)
+    parts1 = tokens1.split("||")
+    parts2 = tokens2.split("||")
+    
+    # 각 부분에서 하나라도 일치하면 매칭
+    for p1 in parts1:
+        for p2 in parts2:
+            if p1 and p2 and p1 == p2:
+                return True
+    
+    # 전체 토큰 문자열이 같으면 매칭
+    if tokens1 == tokens2:
+        return True
+    
+    return False
 
 
 BRAND_ALIAS_RAW = {
@@ -203,6 +265,50 @@ def normalize_brand_name(name: str, owner: str | None = None) -> str:
     return normalized
 
 
+KOREAN_CHAR_PATTERN = re.compile(r"[가-힣]")
+BRAND_DISPLAY_NAME_CACHE: Dict[str, str] = {}
+
+
+def get_brand_display_name(name: str | None) -> str:
+    if not isinstance(name, str):
+        return name or ""
+    cached = BRAND_DISPLAY_NAME_CACHE.get(name)
+    if cached is not None:
+        return cached
+    text = name.strip()
+    display = text
+    match = re.match(r"^(?P<head>.+?)\((?P<paren>.+)\)$", text)
+    if match:
+        head = match.group("head").strip()
+        tail = match.group("paren").strip()
+        head_has = bool(KOREAN_CHAR_PATTERN.search(head))
+        tail_has = bool(KOREAN_CHAR_PATTERN.search(tail))
+        if head_has and not tail_has:
+            display = head
+        elif tail_has and not head_has:
+            display = tail
+        elif head_has and tail_has:
+            display = head
+    BRAND_DISPLAY_NAME_CACHE[name] = display
+    return display
+
+
+def build_display_map(brands: Iterable[str]) -> Dict[str, str]:
+    return {brand: get_brand_display_name(brand) for brand in brands or []}
+
+
+def apply_display_names(fig: go.Figure, display_map: Dict[str, str]) -> None:
+    if not fig or not display_map:
+        return
+    for trace in fig.data:
+        name = getattr(trace, "name", None)
+        if name in display_map:
+            trace.name = display_map[name]
+        legendgroup = getattr(trace, "legendgroup", None)
+        if legendgroup in display_map:
+            trace.legendgroup = display_map[legendgroup]
+
+
 def clean_numeric(value) -> float:
     if pd.isna(value):
         return np.nan
@@ -229,6 +335,55 @@ def load_dataset() -> pd.DataFrame:
         normalize_brand_name(brand, owner)
         for brand, owner in zip(df["브랜드"], df["상호"])
     ]
+    
+    # 같은 토큰을 가진 브랜드명 통일 (시계열 연결을 위해)
+    brand_counts = df["브랜드"].value_counts()
+    brand_list = [b for b in df["브랜드"].unique() if not pd.isna(b)]
+    
+    # 각 브랜드의 토큰 키 계산
+    brand_tokens = {}
+    for brand in brand_list:
+        brand_tokens[brand] = _canonical_tokens(str(brand), BRAND_TOKEN_STOPWORDS)
+    
+    # 토큰 매칭을 기반으로 그룹 생성
+    brand_groups = {}
+    for brand in brand_list:
+        tokens_key = brand_tokens[brand]
+        matched_group = None
+        
+        # 기존 그룹 중 매칭되는 그룹 찾기
+        for group_key, group_brands in brand_groups.items():
+            if _tokens_match(tokens_key, group_key):
+                matched_group = group_key
+                break
+        
+        if matched_group:
+            # 기존 그룹에 추가
+            brand_groups[matched_group].append(brand)
+        else:
+            # 새 그룹 생성
+            brand_groups[tokens_key] = [brand]
+    
+    # 각 그룹에서 가장 많이 나타나는 이름을 표준으로 사용
+    brand_standard = {}
+    for group_key, group_brands in brand_groups.items():
+        if len(group_brands) > 1:
+            # 그룹 내에서 가장 많이 나타나는 이름 선택
+            standard = max(group_brands, key=lambda b: brand_counts.get(b, 0))
+            for brand in group_brands:
+                brand_standard[brand] = standard
+        else:
+            # 그룹에 하나만 있으면 그대로 사용
+            brand_standard[group_brands[0]] = group_brands[0]
+    
+    # 브랜드명 통일 적용
+    def unify_brand(brand):
+        if pd.isna(brand):
+            return brand
+        return brand_standard.get(brand, brand)
+    
+    df["브랜드"] = df["브랜드"].apply(unify_brand)
+    
     df["연도"] = pd.to_numeric(df["연도"], errors="coerce").astype("Int64")
     for col in NUMERIC_COLUMNS:
         if col in df.columns:
@@ -243,7 +398,8 @@ def load_dataset() -> pd.DataFrame:
         df["가맹점수"] > 0, df["순증"] / df["가맹점수"] * 100, np.nan
     )
     df["창업비용_만원"] = df["창업비용합계"] / 10  # 원문 데이터는 천원 단위
-    df["평균매출액_백만원"] = df["평균매출액"] / 1000
+    df["평균매출액_만원"] = df["평균매출액"] / 10
+    df["면적당매출액_만원"] = df["면적당매출액"] / 10
     df["연순이익"] = df["평균매출액"] * 0.3
     df["회수기간"] = np.where(
         df["연순이익"] > 0, df["창업비용합계"] / df["연순이익"], np.nan
@@ -384,7 +540,7 @@ def filter_brands_for_year(
         df_year["가맹점수"], store_selection, store_min, store_max, STORE_BUCKETS
     )
     mask &= build_range_mask(
-        df_year["평균매출액_백만원"],
+        df_year["평균매출액_만원"],
         sales_selection,
         sales_min,
         sales_max,
@@ -529,8 +685,9 @@ overview_tab = dbc.Container(
                                             dcc.Graph(
                                                 id="overview-sales",
                                                 config={"displayModeBar": False},
-                                                style={"height": "420px"},
-                                            )
+                                                style={"height": "100%", "minHeight": "420px"},
+                                            ),
+                                            style={"minHeight": "420px"},
                                         ),
                                     ],
                                     className="shadow-sm",
@@ -721,10 +878,10 @@ detail_tab = dbc.Container(
                 dbc.Col(
                     dbc.Card(
                         [
-                            dbc.CardHeader("가맹점 순증가율"),
+                            dbc.CardHeader("가맹점 수 추이"),
                             dbc.CardBody(
                                 dcc.Graph(
-                                    id="detail-net-growth",
+                                    id="detail-store-count",
                                     config={"displayModeBar": False},
                                     style={"height": "320px"},
                                 )
@@ -821,7 +978,7 @@ app.layout = dbc.Container(
                                 ),
                                 dbc.Col(
                                     [
-                                        dbc.Label("평균 매출액 구간 (백만원)"),
+                                        dbc.Label("평균 매출액 구간 (만원)"),
                                         dcc.Dropdown(
                                             id="sales-range-filter",
                                             options=bucket_dropdown_options(SALES_BUCKETS),
@@ -839,8 +996,8 @@ app.layout = dbc.Container(
                                                                 id="sales-custom-min",
                                                                 type="number",
                                                                 min=0,
-                                                                step=10,
-                                                                placeholder="예) 200",
+                                                                step=100,
+                                                                placeholder="예) 1000",
                                                             ),
                                                         ]
                                                     ),
@@ -854,8 +1011,8 @@ app.layout = dbc.Container(
                                                                 id="sales-custom-max",
                                                                 type="number",
                                                                 min=0,
-                                                                step=10,
-                                                                placeholder="예) 450",
+                                                                step=100,
+                                                                placeholder="예) 5000",
                                                             ),
                                                         ]
                                                     ),
@@ -1039,7 +1196,11 @@ def update_overview(year, brands, year_range):
     for b in scatter_df["브랜드"].unique():
         if b not in order_for_colors:
             order_for_colors.append(b)
+    for b in brands or []:
+        if b not in order_for_colors:
+            order_for_colors.append(b)
     color_map = build_color_map(order_for_colors)
+    display_map = build_display_map(order_for_colors)
     if scatter_df.empty:
         scatter_fig = make_empty_fig("선택한 연도에 데이터가 없습니다.")
     else:
@@ -1049,10 +1210,14 @@ def update_overview(year, brands, year_range):
             y="폐점수",
             size="가맹점수",
             color="브랜드",
-            hover_data={"가맹점수": True, "평균매출액_백만원": ":.1f"},
+            hover_data={
+                "가맹점수": True,
+                "평균매출액_만원": ":,.0f",
+            },
             size_max=60,
             color_discrete_map=color_map,
         )
+        apply_display_names(scatter_fig, display_map)
         max_axis = max(
             scatter_df["신규개점"].max(),
             scatter_df["폐점수"].max(),
@@ -1077,10 +1242,12 @@ def update_overview(year, brands, year_range):
     if cost_df.empty:
         cost_fig = make_empty_fig("창업비용 데이터가 없습니다.")
     else:
+        cost_values = cost_df.values
+        cost_labels = [display_map.get(b, get_brand_display_name(b)) for b in cost_df.index]
         cost_fig = go.Figure(
             go.Bar(
-                x=cost_df.values,
-                y=cost_df.index,
+                x=cost_values,
+                y=cost_labels,
                 orientation="h",
                 marker_color=[color_map.get(b, "#666666") for b in cost_df.index],
             )
@@ -1092,28 +1259,104 @@ def update_overview(year, brands, year_range):
         )
 
     start_year, end_year = sorted([int(year_range[0]), int(year_range[1])])
+    brand_count = len(brands or [])
+    base_height = 420
+    extra_height = max(0, brand_count - 5) * 40
+    sales_height = base_height + extra_height
+    use_direct_labels = brand_count <= 5 if brand_count else True
     time_df = (
         selected[(selected["연도"] >= start_year) & (selected["연도"] <= end_year)]
-        .groupby(["연도", "브랜드"], as_index=False)["평균매출액_백만원"]
+        .groupby(["연도", "브랜드"], as_index=False)["평균매출액_만원"]
         .mean()
     )
+    time_df["연도"] = time_df["연도"].astype(int)
     if time_df.empty:
-        sales_fig = make_empty_fig("해당 범위에 매출 데이터가 없습니다.", height=380)
+        sales_fig = make_empty_fig("해당 범위에 매출 데이터가 없습니다.", height=sales_height)
     else:
         sales_fig = px.line(
             time_df,
             x="연도",
-            y="평균매출액_백만원",
+            y="평균매출액_만원",
             color="브랜드",
             markers=True,
             color_discrete_map=color_map,
         )
+        last_points = []
+        for brand in time_df["브랜드"].unique():
+            series = time_df[time_df["브랜드"] == brand].sort_values("연도")
+            if series.empty:
+                continue
+            last = series.iloc[-1]
+            last_points.append(
+                {
+                    "brand": brand,
+                    "year": last["연도"],
+                    "value": last["평균매출액_만원"],
+                    "display": display_map.get(brand, get_brand_display_name(brand)),
+                    "color": color_map.get(brand, "#2c3e50"),
+                }
+            )
+
+        if use_direct_labels:
+            sales_fig.update_traces(showlegend=False)
+            for item in last_points:
+                sales_fig.add_annotation(
+                    x=item["year"],
+                    y=item["value"],
+                    text=item["display"],
+                    font=dict(
+                        size=12,
+                        color=item["color"],
+                        weight="bold",
+                    ),
+                    xanchor="left",
+                    yanchor="middle",
+                    showarrow=False,
+                    xshift=10,
+                )
+            right_margin = 140
+            legend_config = dict(orientation="h", y=-0.2)
+            range_end = end_year + 0.4
+        else:
+            sales_fig.update_traces(showlegend=True)
+            sorted_brands = [
+                item["brand"]
+                for item in sorted(last_points, key=lambda x: x["value"], reverse=True)
+            ]
+            reordered = []
+            for brand in sorted_brands:
+                for trace in sales_fig.data:
+                    if trace.name == brand:
+                        reordered.append(trace)
+                        break
+            remaining = [trace for trace in sales_fig.data if trace not in reordered]
+            sales_fig.data = tuple(reordered + remaining)
+            right_margin = 40
+            legend_config = dict(
+                title="브랜드",
+                orientation="v",
+                yanchor="top",
+                y=1,
+                x=1.02,
+                xanchor="left",
+            )
+            range_end = end_year + 0.2
+
+        apply_display_names(sales_fig, display_map)
+
         sales_fig.update_layout(
             xaxis_title="연도",
-            yaxis_title="평균 매출액 (백만원)",
+            yaxis_title="평균 매출액 (만원)",
             template="plotly_white",
-            margin=dict(l=20, r=20, t=40, b=20),
-            legend_title="브랜드",
+            height=sales_height,
+            margin=dict(l=20, r=right_margin, t=40, b=20),
+            legend=None if use_direct_labels else legend_config,
+            xaxis=dict(
+                type="linear",
+                dtick=1,
+                tickmode="linear",
+                range=[start_year - 0.2, range_end],
+            ),
         )
     return scatter_title, cost_title, scatter_fig, cost_fig, sales_fig
 
@@ -1187,16 +1430,17 @@ def update_radar_options(
 def build_brand_summary(row: pd.Series) -> List[html.Div]:
     if row is None or row.empty:
         return [html.P("데이터가 없습니다.", className="text-muted")]
+    title = get_brand_display_name(row["브랜드"])
     rows = [
         ("가맹점 수", f"{row['가맹점수']:,.0f}개"),
         ("신규개점", f"{row['신규개점']:,.0f}개"),
         ("폐점수", f"{row['폐점수']:,.0f}개"),
-        ("평균 매출액", f"{row['평균매출액_백만원']:,.1f}백만원"),
-        ("면적당 매출액", f"{row['면적당매출액']:,.0f}원/3.3㎡"),
-        ("평균 창업비용", f"{row['창업비용_만원']:,.0f}만원"),
+        ("평균 매출액", format_currency(row["평균매출액_만원"], "만원")),
+        ("면적당 매출액", format_currency(row["면적당매출액_만원"], "만원/3.3㎡")),
+        ("평균 창업비용", format_currency(row["창업비용_만원"], "만원")),
     ]
     return [
-        html.H5(row["브랜드"], className="fw-bold"),
+        html.H5(title, className="fw-bold"),
         html.Hr(),
         html.Ul([html.Li(f"{label}: {value}") for label, value in rows], className="mb-0"),
     ]
@@ -1229,6 +1473,7 @@ def update_radar(year, brand_a, brand_b):
     max_values = top_base[RADAR_FIELDS].max().replace(0, np.nan)
 
     color_map = build_color_map([brand_a, brand_b])
+    display_map = build_display_map([brand_a, brand_b])
     fig = go.Figure()
     for idx, brand in enumerate([brand_a, brand_b]):
         row = subset[subset["브랜드"] == brand].iloc[0]
@@ -1249,6 +1494,7 @@ def update_radar(year, brand_a, brand_b):
             )
         )
 
+    apply_display_names(fig, display_map)
     fig.update_layout(
         polar=dict(
             radialaxis=dict(visible=True, range=[0, 110]),
@@ -1353,7 +1599,7 @@ def toggle_custom_inputs(store_filter, sales_filter, cost_filter):
 @app.callback(
     Output("detail-open-close", "figure"),
     Output("detail-invest", "figure"),
-    Output("detail-net-growth", "figure"),
+    Output("detail-store-count", "figure"),
     Output("detail-kpis", "children"),
     Input("detail-brand", "value"),
     Input("detail-year-range", "value"),
@@ -1375,6 +1621,7 @@ def update_detail(brand, year_range, profit_rate):
     subset["회수기간"] = np.where(
         subset["연순이익"] > 0, subset["창업비용합계"] / subset["연순이익"], np.nan
     )
+    subset["연도"] = subset["연도"].astype(int)
 
     open_close_fig = go.Figure()
     open_close_fig.add_trace(
@@ -1400,6 +1647,11 @@ def update_detail(brand, year_range, profit_rate):
         yaxis_title="매장 수 (위=개점, 아래=폐점)",
         legend=dict(orientation="h"),
         margin=dict(l=20, r=20, t=40, b=20),
+        xaxis=dict(
+            type="linear",
+            dtick=1,
+            tickmode="linear",
+        ),
     )
 
     invest_fig = go.Figure()
@@ -1415,38 +1667,46 @@ def update_detail(brand, year_range, profit_rate):
     invest_fig.add_trace(
         go.Scatter(
             x=subset["연도"],
-            y=subset["평균매출액"] / 10,
+            y=subset["평균매출액_만원"],
             name="연매출 (만원)",
             mode="lines+markers",
-            yaxis="y2",
             line=dict(color="#c0392b", width=4),
         )
     )
     invest_fig.update_layout(
         template="plotly_white",
         xaxis_title="연도",
-        yaxis=dict(title="창업비용 (만원)"),
-        yaxis2=dict(
-            title="연매출 (만원)",
-            overlaying="y",
-            side="right",
-        ),
+        yaxis=dict(title="금액 (만원)"),
         margin=dict(l=40, r=40, t=40, b=20),
         legend=dict(orientation="h"),
+        xaxis=dict(
+            type="linear",
+            dtick=1,
+            tickmode="linear",
+        ),
     )
 
-    net_growth_fig = go.Figure(
-        go.Bar(
+    store_count_fig = go.Figure(
+        go.Scatter(
             x=subset["연도"],
-            y=subset["순증가율"],
-            marker_color=np.where(subset["순증가율"] >= 0, "#1abc9c", "#e67e22"),
+            y=subset["가맹점수"],
+            mode="lines+markers",
+            line=dict(color="#16a085", width=4),
+            fill="tozeroy",
+            name="가맹점 수",
         )
     )
-    net_growth_fig.update_layout(
+    store_count_fig.update_layout(
         template="plotly_white",
         xaxis_title="연도",
-        yaxis_title="순증가율 (%)",
-        margin=dict(l=20, r=20, t=40, b=20),
+        yaxis_title="가맹점 수 (개)",
+        margin=dict(l=40, r=40, t=40, b=40),
+        xaxis=dict(
+            type="linear",
+            dtick=1,
+            tickmode="linear",
+            range=[start_year - 0.5, end_year + 0.5],
+        ),
     )
 
     latest = subset.iloc[-1]
@@ -1500,7 +1760,7 @@ def update_detail(brand, year_range, profit_rate):
         ],
         className="g-2",
     )
-    return open_close_fig, invest_fig, net_growth_fig, cards
+    return open_close_fig, invest_fig, store_count_fig, cards
 
 
 if __name__ == "__main__":
