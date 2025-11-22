@@ -482,6 +482,32 @@ def format_currency(value: float, unit: str = "만원") -> str:
     return f"{value:,.0f}{unit}"
 
 
+def format_count(value: float, unit: str = "개") -> str:
+    if pd.isna(value):
+        return "-"
+    return f"{value:,.0f}{unit}"
+
+
+RADAR_FIELD_DISPLAYERS = {
+    "가맹점수": lambda row: format_count(row.get("가맹점수")),
+    "신규개점": lambda row: format_count(row.get("신규개점")),
+    "폐점수": lambda row: format_count(row.get("폐점수")),
+    "평균매출액": lambda row: format_currency(row.get("평균매출액_만원"), "만원"),
+    "면적당매출액": lambda row: format_currency(row.get("면적당매출액_만원"), "만원/3.3㎡"),
+    "창업비용합계": lambda row: format_currency(row.get("창업비용_만원"), "만원"),
+}
+
+
+def format_radar_value(field: str, row: pd.Series) -> str:
+    formatter = RADAR_FIELD_DISPLAYERS.get(field)
+    if formatter:
+        return formatter(row)
+    value = row.get(field)
+    if pd.isna(value):
+        return "-"
+    return f"{value:,.0f}"
+
+
 def bucket_dropdown_options(bucket_dict: Dict[str, Dict[str, float]]) -> List[Dict[str, str]]:
     return [{"label": cfg["label"], "value": key} for key, cfg in bucket_dict.items()]
 
@@ -1482,16 +1508,24 @@ def update_radar(year, brand_a, brand_b):
     for idx, brand in enumerate([brand_a, brand_b]):
         row = subset[subset["브랜드"] == brand].iloc[0]
         normalized = []
+        display_values = []
         for field in RADAR_FIELDS:
             max_val = max_values.get(field)
-            raw = row[field]
-            normalized.append((raw / max_val * 100) if max_val else 0)
+            raw = row.get(field)
+            if not max_val or pd.isna(max_val) or pd.isna(raw):
+                normalized.append(0)
+            else:
+                normalized.append((raw / max_val) * 100)
+            display_values.append(format_radar_value(field, row))
         normalized.append(normalized[0])
         theta = RADAR_FIELDS + [RADAR_FIELDS[0]]
+        text_values = display_values + [display_values[0]]
         fig.add_trace(
             go.Scatterpolar(
                 r=normalized,
                 theta=theta,
+                text=text_values,
+                hovertemplate="<b>%{fullData.name}</b><br>%{theta}: %{text}<extra></extra>",
                 fill="toself",
                 name=brand,
                 marker=dict(color=color_map.get(brand, COLOR_SCALE[idx % len(COLOR_SCALE)])),
@@ -1771,4 +1805,3 @@ def update_detail(brand, year_range, profit_rate):
 
 if __name__ == "__main__":
     app.run(debug=True)
-
