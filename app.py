@@ -1289,7 +1289,10 @@ def update_overview(year, brands, year_range):
     base_height = 420
     extra_height = max(0, brand_count - 5) * 40
     sales_height = base_height + extra_height
-    use_direct_labels = brand_count <= 5 if brand_count else True
+    max_direct_label_brands = 10
+    use_direct_labels = (
+        brand_count <= max_direct_label_brands if brand_count else True
+    )
     time_df = (
         selected[(selected["연도"] >= start_year) & (selected["연도"] <= end_year)]
         .groupby(["연도", "브랜드"], as_index=False)["평균매출액_만원"]
@@ -1326,6 +1329,24 @@ def update_overview(year, brands, year_range):
                     "color": color_map.get(brand, "#2c3e50"),
                 }
             )
+
+        overlap_requires_legend = False
+        if len(last_points) >= 2:
+            value_range = time_df["평균매출액_만원"].max() - time_df["평균매출액_만원"].min()
+            value_range = 0 if pd.isna(value_range) else value_range
+            if value_range == 0:
+                overlap_requires_legend = True
+            else:
+                threshold = value_range * 0.03
+                for i in range(len(last_points)):
+                    for j in range(i + 1, len(last_points)):
+                        if abs(last_points[i]["value"] - last_points[j]["value"]) <= threshold:
+                            overlap_requires_legend = True
+                            break
+                    if overlap_requires_legend:
+                        break
+        if overlap_requires_legend:
+            use_direct_labels = False
 
         if use_direct_labels:
             sales_fig.update_traces(showlegend=False)
